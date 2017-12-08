@@ -5,7 +5,7 @@ author: David A. Bignotti
 ---
 
 ```{r load packages}
-
+#load required packages
 library(gtrendsR)
 library(ggplot2)
 library(prophet)
@@ -15,7 +15,7 @@ library(prophet)
 
 
 ```{r national trends}
-
+#plot the volume of searches that included the term with date window
 trends_us = gtrends(c("Covfefe"), geo = c("US"), gprop = "web", time = "2017-05-01 2017-06-30")[[1]]
 
 ggplot(data = trends_us, aes(x = date, y = hits)) +
@@ -29,7 +29,7 @@ ggplot(data = trends_us, aes(x = date, y = hits)) +
 ```
 
 ```{r global trends}
-
+#plot the volume of searches with the term in multiple countries
 trends_global = gtrends(c("Covfefe"), geo = c("US","CA","GB","AU"), gprop = "web", time = "2017-04-01 2017-06-30")[[1]]
 
 ggplot(data = trends_global, aes(x = date, y = hits, group = geo)) +
@@ -43,7 +43,7 @@ ggplot(data = trends_global, aes(x = date, y = hits, group = geo)) +
 ```
 
 ```{r prophet pattern detection}
-
+#name objects for pattern forecast
 forcase <- trends_us[,c("date","hits")]
 colnames(forcase) <-c("ds","y")
 
@@ -52,15 +52,10 @@ m <- prophet(forcase)
 ```
 
 ```{r pattern forecast}
-
+#run forecast
 future <- make_future_dataframe(m, periods = 365)
 forecast <- predict(m, future)
 plot(m, forecast)
-
-```
-
-```{r patterns over various time frames}
-
 prophet_plot_components(m, forecast)
 
 ```
