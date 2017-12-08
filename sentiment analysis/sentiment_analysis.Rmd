@@ -9,13 +9,11 @@ output: html_document
 library("rmongodb")
 library("dplyr")
 library("randomForest")
-library("dplyr")
 library("plyr")
 library("class")
 library("e1071")
 library("nnet")
 library("neuralnet")
-library("randomForest")
 library("ranger")
 ```
 
