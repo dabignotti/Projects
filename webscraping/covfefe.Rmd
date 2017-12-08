@@ -1,0 +1,68 @@
+---
+title: "R + Google: Search Trends Template"
+output: html_document
+author: David A. Bignotti
+---
+
+```{r load packages}
+
+library(gtrendsR)
+library(ggplot2)
+library(prophet)
+
+```
+
+
+
+```{r national trends}
+
+trends_us = gtrends(c("Covfefe"), geo = c("US"), gprop = "web", time = "2017-05-01 2017-06-30")[[1]]
+
+ggplot(data = trends_us, aes(x = date, y = hits)) +
+  geom_line(size = 0.5, alpha = 0.7, aes(color = geo)) +
+  geom_point(size = 0) +
+  ylim(0, NA) +
+  theme(legend.title=element_blank(), axis.title.x = element_blank()) +
+  ylab("Hits") + 
+  ggtitle("'Covfefe' Search Incidence (2017)")
+
+```
+
+```{r global trends}
+
+trends_global = gtrends(c("Covfefe"), geo = c("US","CA","GB","AU"), gprop = "web", time = "2017-04-01 2017-06-30")[[1]]
+
+ggplot(data = trends_global, aes(x = date, y = hits, group = geo)) +
+  geom_line(size = 1, alpha = 0.7, aes(color = geo)) +
+  geom_point(size = 0) +
+  ylim(0, NA) +
+  theme(legend.title=element_blank(), axis.title.x = element_blank()) +
+  ylab("Hits'") + 
+  ggtitle("Google Trends in US, Canada, UK, and Australia")
+
+```
+
+```{r prophet pattern detection}
+
+forcase <- trends_us[,c("date","hits")]
+colnames(forcase) <-c("ds","y")
+
+m <- prophet(forcase)
+
+```
+
+```{r pattern forecast}
+
+future <- make_future_dataframe(m, periods = 365)
+forecast <- predict(m, future)
+plot(m, forecast)
+
+```
+
+```{r patterns over various time frames}
+
+prophet_plot_components(m, forecast)
+
+```
+
+
