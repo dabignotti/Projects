@@ -1,0 +1,350 @@
+---
+title: "Comparing Neural Network Models w/ Keras"
+author: "David A. Bignotti"
+date: "March 27, 2019"
+output: html_document
+---
+
+
+#1. Load Libraries
+```{r Load Libraries, include=FALSE}
+library(tidyverse)
+library(glue)
+library(forcats)
+library(timetk)
+library(tidyquant)
+library(tibbletime)
+library(tibble)
+library(cowplot)
+library(ggplot2)
+library(recipes)
+library(readxl)
+library(readr)
+library(rsample)
+library(yardstick) 
+library(keras)
+```
+
+
+#2. Data Preprocessing
+##Load Data
+```{r Load Data, include=FALSE}
+chevy_raw <- read_csv("C:/Users/UserID/Documents/Path/To/File.csv", 
+                        col_types = cols(date = col_date(format = "%m/%d/%Y")))
+
+data <- data.matrix(chevy_raw[,-1]) #remove date field and convert to matrix format
+```
+
+
+##Normalize and Split Data
+```{r Split and Normalize Data OLD, include=FALSE}
+
+#In review, I may need to scale/normalize ALL of the data before splitting into train/validation/test sets. -David
+
+train_data <- data[1:120,] #10 years of training data
+mean <- apply(train_data, 2, mean)
+std <- apply(train_data, 2, sd)
+data <- scale(data, center = mean, scale = std)
+```
+
+
+#3. Model Functions
+##Sequence Generator Function
+```{r Sequence Generator, include=FALSE}
+sequence_generator <- function(start) {
+  value <- start - 1
+  function() {
+    value <<- value + 1
+    value
+  }
+}
+
+gen <- sequence_generator(10)
+gen() #test it, output should be 10 and then 11
+gen()
+```
+
+
+```{r Data Generator DEPRECATED, eval=FALSE, include=FALSE}
+generator <- function(data, lookback, delay, min_index, max_index,
+                      shuffle = FALSE, batch_size = 128, step = 6) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <- sample(c((min_index+lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i+batch_size-1, max_index))
+      i <<- i + length(rows)
+    }
+    
+    samples <- array(0, dim = c(length(rows), 
+                                lookback / step,
+                                dim(data)[[-1]]))
+    targets <- array(0, dim = c(length(rows)))
+                     
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]] - 1, 
+                     length.out = dim(samples)[[2]])
+      samples[j,,] <- data[indices,]
+      targets[[j]] <- data[rows[[j]] + delay,2]
+    }            
+    
+    list(samples, targets)
+  }
+}
+```
+
+
+##Data Generator Function
+```{r NEW Data Generator, include=FALSE}
+generator <- function(data, lookback, delay, min_index, max_index,
+                      shuffle=FALSE, batch_size=128, step=3) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <- sample(c((min_index+lookback):max_index), size=batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i+batch_size, max_index))
+      i <<- i + length(rows)
+    }
+    
+    samples <- array(0, dim=c(length(rows),
+                              lookback/step,
+                              dim(data)[[-1]]))
+    targets <- array(0, dim=c(length(rows)))
+    
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]], 
+                     length.out=dim(samples)[[2]])
+      samples[j,,] <- data[indices,]
+      targets[[j]] <- data[rows[[j]] + delay, 2]
+    }
+    
+    list(samples, targets)
+    }
+  }
+
+```
+
+
+##Train/Val/Test Functions
+```{r Preparing Training, Validation, and Test Generators}
+lookback <- 12 #SUBJECT TO CHANGE {24, 36} - how far back from time t to look back for data to use in prediction
+step <- 3 #SUBJECT TO CHANGE {1, 6, 12} - depends on how many steps in data to draw out; once every three rows/months 
+delay <- 1 #SUBJECT TO CHANGE {2, 3, 6} - depends on how many steps forward you want to predict
+batch_size <- 12 #SUBJECT TO CHANGE {3, 6, 12, 24} 
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 120,
+  shuffle = TRUE,
+  step = step, 
+  batch_size = batch_size
+)
+val_gen = generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 121,
+  max_index = 168,
+  step = step,
+  batch_size = batch_size
+)
+test_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 169,
+  max_index = NULL,
+  step = step,
+  batch_size = batch_size
+)
+
+val_steps <- (168 - 121 - lookback) / batch_size
+
+test_steps <- (nrow(data) - 169 - lookback) / batch_size
+
+```
+
+
+#4. Modeling
+##Baseline Error
+```{r Computing Baseline MAE}
+evaluate_naive_method <- function() {
+  batch_maes <- c()
+  for (step in 1:val_steps) {
+    c(samples, targets) %<-% val_gen()
+    preds <- samples[,dim(samples)[[2]],2]
+    mae <- mean(abs(preds - targets))
+    batch_maes <- c(batch_maes, mae)
+  } 
+  print(mean(batch_maes))
+}
+
+evaluate_naive_method()
+
+sales_mae <- 0.1704211 * std[[2]]
+```
+
+
+##Model 1
+```{r Model_1 - A Densely Connected Model, include=FALSE}
+library(keras)
+
+model_1 <- keras_model_sequential() %>%
+  layer_flatten(input_shape=c(lookback/step, dim(data)[-1])) %>% #input layer
+  layer_dense(units=32, activation="relu") %>% #hidden layer
+  layer_dense(units=1) #output layer
+
+model_1 %>% compile(
+  optimizer=optimizer_rmsprop(), 
+  loss="mae"
+)
+
+history_1 <- model_1 %>% fit_generator(
+  train_gen, 
+  steps_per_epoch=200, 
+  epochs=20, 
+  validation_data=val_gen, 
+  validation_steps=val_steps
+)
+```
+
+
+```{r Plot Model_1}
+plot(history_1)
+```
+
+
+##Model 2
+```{r Model_2 - A GRU Layer Model, include=FALSE}
+model_2 <- keras_model_sequential() %>% #input layer
+  layer_gru(units=12, dropout=0.4, input_shape=list(NULL, dim(data)[[-1]])) %>% #gru layer
+  layer_dense(units=1) #output layer
+
+model_2 %>% compile(
+  optimizer=optimizer_adam(), 
+  loss="mae", 
+  metrics=c("acc")
+)
+
+history_2 <- model_2 %>% fit_generator(
+  train_gen, 
+  steps_per_epoch=100, 
+  epochs=20, 
+  validation_data=val_gen, 
+  validation_steps=val_steps
+)
+```
+
+
+```{r Plot Model_2}
+plot(history_2)
+```
+
+
+##Model 3
+```{r Model_3 - Dropout-Regularized GRU-Based Model, include=FALSE}
+model_3 <- keras_model_sequential() %>% #input layer
+  layer_gru(units=32, dropout=0.2, recurrent_dropout=0.2, 
+            input_shape=list(NULL, dim(data)[[-1]])) %>% #gru layer with dropout, recurrent dropout
+  layer_dense(units=1) #output layer
+
+model_3 %>% compile(
+  optimizer=optimizer_adam(),
+  loss="mae"
+)
+
+history_3 <- model_3 %>% fit_generator(
+  train_gen, 
+  steps_per_epoch=200, 
+  epochs=20, 
+  validation_data=val_gen, 
+  validation_steps=val_steps
+)
+
+```
+
+
+```{r Plot Model_3}
+plot(history_3)
+```
+
+
+##Model 4
+```{r Model_4 - Bidirectional LSTM Model, include=FALSE}
+model_4 <- keras_model_sequential() %>% #input layer
+  bidirectional(
+    layer_lstm(units=32), input_shape=list(NULL, dim(data)[[-1]])
+  ) %>% #bidirectional gru layer
+  layer_dense(units=1) #output layer
+
+model_4 %>% compile(
+  optimizer=optimizer_rmsprop(), 
+  loss="mae"
+)
+
+history_4 <- model_4 %>% fit_generator(
+  train_gen, 
+  steps_per_epoch=200, 
+  epochs=20, 
+  validation_data=val_gen, 
+  validation_steps=val_steps
+)
+```
+
+
+##Model 5
+```{r Model_5 - Bidirectional GRU Model, include=FALSE}
+model_5 <- keras_model_sequential() %>% #input layer
+  bidirectional(
+    layer_gru(units=32), input_shape=list(NULL, dim(data)[[-1]])
+  ) %>% #bidirectional gru layer
+  layer_dense(units=1) #output layer
+
+model_5 %>% compile(
+  optimizer=optimizer_rmsprop(), 
+  loss="mae"
+)
+
+history_5 <- model_5 %>% fit_generator(
+  train_gen, 
+  steps_per_epoch=200, 
+  epochs=20, 
+  validation_data=val_gen, 
+  validation_steps=val_steps
+)
+```
+
+
+```{r Plot Model_5}
+plot(history_5)
+```
+
+
+#5. Evaluating Test Set Accuracy
+```{r}
+results_1 <- model_1 %>% evaluate(test_gen)
+```
+
+
+
+#6. Post-Modeling Operations
+##Correlation Analysis
+```{r Correlation Analysis}
+#library(yardstick)
+#library(LIME)
+
+```
+
