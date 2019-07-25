@@ -1,0 +1,406 @@
+---
+title: "Tensorflow and Reticulate"
+author: "David A. Bignotti"
+date: "September 20, 2018"
+output: html_notebook
+---
+
+```{r install and load reticulate package, include=FALSE}
+#install.packages("reticulate")
+library(reticulate)
+use_condaenv("relevantenv")
+py_discover_config()
+py_install("pandas")
+```
+
+```{python}
+import pandas
+flights = pandas.read_csv("flight.csv")
+flights = flights[flights['dest'] == "ORD"]
+flights = flights[['carrier', 'dep_delay', 'arr_delay']]
+flights = flights.dropna()
+```
+
+```{r, fig.width=7, fig.height=3}
+library(ggplot2)
+ggplot(py$flights, aes(carrier, arr_delay)) + geom_point() + geom_jitter()
+```
+
+```{python eval=FALSE, include=FALSE}
+import pandas as pd
+import pyodbc as pyodbc
+import numpy as np
+import statsmodels as smf
+import statsmodels.formula.api as smf
+from matplotlib import pyplot as plt
+from matplotlib import cm as cm
+print ('did it work')
+connection = pyodbc.connect('DSN=XXXXXX')
+sql= "select top 10 * from TERADATA_SCHEMA.TERADATA_TABLE"
+df = pd.read_sql(sql,connection)
+print(df.head())
+```
+
+```{python}
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import scale, minmax_scale
+import tensorflow as tf
+
+# input location
+sales_path = '/Users/USER/Desktop/Analytics/'
+sales_file1 = 'Google_EWS_DMA_4_9_18.csv'
+
+
+# directory containing dealer.csv, price.csv, finance.csv, review.csv
+search_path = '/Users/USER/Desktop/Analytics/'
+
+# output file to write csv's
+outputFile = '/Users/USER/Desktop/Analytics/TF_predictions.csv'
+
+def main(argv):
+  # sales per day
+  rawsales1 = pd.read_csv(str(sales_path + sales_file1), sep = '^')
+  #rawsales2 = pd.read_csv(str(sales_path + sales_file2))
+  #rawsales = rawsales1.append([rawsales2])
+  rawsales = rawsales1
+
+  # convert to weekly
+  rawsales['actual_dt'] = pd.to_datetime(rawsales['actual_dt'])
+  rawsales['week_start'] = rawsales['actual_dt'].dt.to_period('W').apply(lambda r: r.start_time)
+  rawsales['rtl_plus_dir'] = np.where(rawsales['rtl_plus_dir'] > 0,
+                                      rawsales['rtl_plus_dir'], 0)
+
+  rawsales2 = rawsales.groupby(['week_start', 'rgn_desc', 'gmma_desc',
+                                'mktg_div_grp_desc', 'brand']).agg({'rtl_plus_dir': 'sum'}).reset_index()
+
+  # Search by week
+  # Should create a dictionary for each file and pre-define data types to increase performance
+  file = 'dealer.csv'
+  rawsearchDealer = pd.read_csv(str(search_path + file), header=None)
+  rawsearchDealer.columns = ['year', 'week_start_date', 'lop_geo_type',
+                             'lop_name', 'oem_group', 'make', 'model', 'modifier',
+                             'dealer_queries']
+  rawsearchDealer = rawsearchDealer[rawsearchDealer['model'] != '_make_only']
+  rawsearchDealer = rawsearchDealer[rawsearchDealer['lop_geo_type'] == 'DMA Region']
+  rawsearchDealer['week_start_date'] = pd.to_datetime(rawsearchDealer['week_start_date'])
+  rawsearchDealer['lop_name'] = map(lambda x: x.upper(), rawsearchDealer['lop_name'])
+  rawsearchDealer = rawsearchDealer[['week_start_date', 'lop_name', 'model',
+                                     'dealer_queries']]
+
+  # use finance search at make level
+  file = 'finance.csv'
+  rawsearchFinance = pd.read_csv(str(search_path + file), header=None)
+  rawsearchFinance.columns = ['year', 'week_start_date', 'lop_geo_type',
+                              'lop_name', 'oem_group', 'make', 'model',
+                              'modifier', 'finance_queries']
+  rawsearchFinance = rawsearchFinance[rawsearchFinance['model'] == '_make_only']
+  rawsearchFinance = rawsearchFinance[rawsearchFinance['lop_geo_type'] == 'DMA Region']
+  rawsearchFinance['week_start_date'] = pd.to_datetime(rawsearchFinance['week_start_date'])
+  rawsearchFinance['lop_name'] = map(lambda x: x.upper(), rawsearchFinance['lop_name'])
+  rawsearchFinance = rawsearchFinance[['week_start_date', 'lop_name', 'make',
+                                       'finance_queries']]
+
+  file = 'price.csv'
+  rawsearchPrice = pd.read_csv(str(search_path + file), header=None)
+  rawsearchPrice.columns = ['year', 'week_start_date', 'lop_geo_type',
+                            'lop_name', 'oem_group', 'make', 'model', 'modifier',
+                            'price_queries']
+  rawsearchPrice = rawsearchPrice[rawsearchPrice['model'] != '_make_only']
+  rawsearchPrice = rawsearchPrice[rawsearchPrice['lop_geo_type'] == 'DMA Region']
+  rawsearchPrice['week_start_date'] = pd.to_datetime(rawsearchPrice['week_start_date'])
+  rawsearchPrice['lop_name'] = map(lambda x: x.upper(),
+                                   rawsearchPrice['lop_name'])
+  rawsearchPrice = rawsearchPrice[['week_start_date', 'lop_name', 'model',
+                                   'price_queries']]
+
+  file = 'review.csv'
+  rawsearchReview = pd.read_csv(str(search_path + file), header=None)
+  rawsearchReview.columns = ['year', 'week_start_date', 'lop_geo_type',
+                             'lop_name', 'oem_group', 'make', 'model', 'modifier',
+                             'review_queries']
+  rawsearchReview = rawsearchReview[rawsearchReview['model'] != '_make_only']
+  rawsearchReview = rawsearchReview[rawsearchReview['lop_geo_type'] == 'DMA Region']
+  rawsearchReview['week_start_date'] = pd.to_datetime(rawsearchReview['week_start_date'])
+  rawsearchReview['lop_name'] = map(lambda x: x.upper(), rawsearchReview['lop_name'])
+  rawsearchReview = rawsearchReview[['week_start_date', 'lop_name', 'model', 'review_queries']]
+
+  # create brand-make and dma-region dictionaries.
+  brand_make = rawsales2[['brand', 'mktg_div_grp_desc']].groupby(['brand', 'mktg_div_grp_desc']).size().reset_index()
+  dma_region = rawsales2[['rgn_desc', 'gmma_desc']].groupby(['rgn_desc', 'gmma_desc']).size().reset_index()
+
+  # merged sales and search data
+  merged = pd.merge(rawsales2, rawsearchDealer, how='left',
+                    left_on=['week_start', 'brand', 'gmma_desc'],
+                    right_on=['week_start_date', 'model', 'lop_name'])
+  merged2 = pd.merge(merged, rawsearchFinance, how='left',
+                     left_on=['week_start', 'mktg_div_grp_desc', 'gmma_desc'],
+                     right_on=['week_start_date', 'make', 'lop_name'])
+  merged3 = pd.merge(merged2, rawsearchPrice, how='left',
+                     left_on=['week_start', 'brand', 'gmma_desc'],
+                     right_on=['week_start_date', 'model', 'lop_name'])
+  merged4 = pd.merge(merged3, rawsearchReview, how='left',
+                     left_on=['week_start', 'brand', 'gmma_desc'],
+                     right_on=['week_start_date', 'model', 'lop_name'])
+
+  merged4 = merged4[['week_start', 'gmma_desc', 'mktg_div_grp_desc', 'brand',
+                     'rtl_plus_dir', 'dealer_queries', 'finance_queries',
+                     'price_queries', 'review_queries']]
+  merged4['dealer_queries'] = merged4['dealer_queries'].fillna(0)
+  merged4['finance_queries'] = merged4['finance_queries'].fillna(0)
+  merged4['price_queries'] = merged4['price_queries'].fillna(0)
+  merged4['review_queries'] = merged4['review_queries'].fillna(0)
+
+  merged4['week_number'] = merged4['week_start'].rank(axis=0, method='dense')
+
+  def hist_fut_widen(data, n=12, target=12):
+    # take dataframe and separate out historic training and future prediction
+    # target is 12 weeks out. target=0 for final prediction
+    # n>=target for training data.
+    data['week_difference'] = (max(data['week_number']) - n) - data['week_number']
+
+    # filter out past target
+    data = data[(data['week_difference'] >= -1*target)]
+
+    data['week_difference_str'] = data['week_difference'].apply(abs).apply(int).apply(str)
+
+    data['week_name_sales'] = np.where(data['week_difference'] < 0,
+                                       'd_fut_' + data['week_difference_str'],
+                                       'd_hist_' + data['week_difference_str'])
+
+    data['week_name_dealer'] = np.where(data['week_difference'] < 0,
+                                        'dealer_fut_' + data['week_difference_str'],
+                                        'dealer_hist_' + data['week_difference_str'])
+
+    data['week_name_finance'] = np.where(data['week_difference'] < 0,
+                                         'finance_fut_' + data['week_difference_str'],
+                                         'finance_hist_' + data['week_difference_str'])
+
+    data['week_name_price'] = np.where(data['week_difference'] < 0,
+                                       'price_fut_' + data['week_difference_str'],
+                                       'price_hist_' + data['week_difference_str'])
+
+    data['week_name_review'] = np.where(data['week_difference'] < 0,
+                                        'review_fut_' + data['week_difference_str'],
+                                        'review_hist_' + data['week_difference_str'])
+
+    # long to wide
+    saleswide = data.pivot_table(index=['brand', 'gmma_desc'],
+                                 columns='week_name_sales',
+                                 values='rtl_plus_dir').reset_index()
+    saleswide = saleswide.fillna(0)
+
+    searchwideDealer = data.pivot_table(index=['brand', 'gmma_desc'],
+                                        columns='week_name_dealer',
+                                        values='dealer_queries').reset_index()
+    searchwideDealer = searchwideDealer.fillna(0)
+
+    searchwideFinance = data.pivot_table(index=['brand', 'gmma_desc'],
+                                         columns='week_name_finance',
+                                         values='finance_queries').reset_index()
+    searchwideFinance = searchwideFinance.fillna(0)
+
+    searchwidePrice = data.pivot_table(index=['brand', 'gmma_desc'],
+                                       columns='week_name_price',
+                                       values='price_queries').reset_index()
+    searchwidePrice = searchwidePrice.fillna(0)
+
+    searchwideReview = data.pivot_table(index=['brand', 'gmma_desc'],
+                                        columns='week_name_review',
+                                        values='review_queries').reset_index()
+    searchwideReview = searchwideReview.fillna(0)
+
+    mergedwide1 = pd.merge(saleswide,
+                           searchwideDealer,
+                           how='left', on=['brand', 'gmma_desc'])
+    mergedwide2 = pd.merge(mergedwide1,
+                           searchwideFinance,
+                           how='left', on=['brand', 'gmma_desc'])
+    mergedwide3 = pd.merge(mergedwide2,
+                           searchwidePrice,
+                           how='left', on=['brand', 'gmma_desc'])
+    mergedwide4 = pd.merge(mergedwide3,
+                           searchwideReview,
+                           how='left', on=['brand', 'gmma_desc'])
+
+    # add in region and make
+    mergedwide4 = pd.merge(mergedwide4,
+                           brand_make[['brand', 'mktg_div_grp_desc']],
+                           on=['brand'])
+    mergedwide4 = pd.merge(mergedwide4,
+                           dma_region[['rgn_desc', 'gmma_desc']],
+                           on=['gmma_desc'])
+
+    mergedwide4 = mergedwide4.fillna(0)
+    return(mergedwide4)
+
+  # create training sets where target is different points in time.
+  mergedwide = hist_fut_widen(merged4, n=12)
+  mergedwide2 = hist_fut_widen(merged4, n=13)
+  mergedwide3 = hist_fut_widen(merged4, n=14)
+  mergedwide4 = hist_fut_widen(merged4, n=15)
+  mergedwide5 = hist_fut_widen(merged4, n=16)
+
+  mergedwideAll = mergedwide.append([mergedwide2, mergedwide3,
+                                     mergedwide4, mergedwide5])
+  mergedwideAll = mergedwideAll.fillna(0)
+
+  # Create final dataset
+  data = mergedwideAll.copy().dropna()
+
+  # column defs
+  #another difference between python 2.X and 3.X; filter creates an object in Py3, creating a list from the filter
+
+  fut_cols = [ 'd_fut_'+ str(x) for x in range(1,13)]
+  hist_cols = list(reversed(list(filter(lambda x: 'd_hist' in x, list(data)))))
+  finance_cols = list(reversed(list(filter(lambda x: 'finance_hist' in x, list(data)))))
+  review_cols = list(reversed(list(filter(lambda x: 'review_hist' in x, list(data)))))
+  price_cols = list(reversed(list(filter(lambda x: 'price_hist' in x, list(data)))))
+  dealer_cols = list(reversed(list(filter(lambda x: 'dealer_hist' in x, list(data)))))
+  non_kpi_cols = finance_cols + review_cols + price_cols + dealer_cols
+  y_vars = fut_cols
+  kpi = 'd_fut_12'
+
+  data.ix[:, non_kpi_cols] = minmax_scale(data.ix[:, non_kpi_cols], axis=1)
+
+  categ_cols = ['brand', 'gmma_desc', 'mktg_div_grp_desc', 'rgn_desc']
+  cont_cols = filter(lambda x: '_hist' in x, list(data))
+
+  # Model hyperparameters
+  NUM_EPOCHS = 50
+  NUM_STEPS = 10000
+
+  SEED = 42
+  NUM_INPUTS = len(hist_cols)
+  HIST_LENGTH = len(hist_cols)
+  LSTM_SIZE = 2
+  NUM_LAYERS = 4
+  NUM_OUTPUTS = len(y_vars)
+  NUM_FEATS = 5
+
+  BATCH_SIZE = 75
+  LEARNING_RATE = 0.15
+  L1_REG = 1e-6
+  FORGET_BIAS = 0.85
+  CELL_CLIP = 44
+  OUTPUT_KEEP_PROB = 0.97
+
+  model_params = MODEL_PARAMS = {'cell_clip': CELL_CLIP,
+                                 'learning_rate': LEARNING_RATE,
+                                 'num_epochs': NUM_EPOCHS,
+                                 'batch_size': BATCH_SIZE,
+                                 'forget_bias': FORGET_BIAS,
+                                 'l1_reg': L1_REG,
+                                 'output_keep_prob': OUTPUT_KEEP_PROB
+                                }
+
+  # TF input and model fn's
+  def input_fn(df, batch_size=model_params['batch_size'], seed=None,
+               num_epochs=None, mode=tf.contrib.learn.ModeKeys.TRAIN):
+    hist_np = [np.array(df[[k, l, m, n, o]].values, dtype=np.float32) for (k, l, m, n, o) in zip(hist_cols, finance_cols, review_cols, price_cols, dealer_cols)]
+    fut_np = [np.array(df[k].values, dtype=np.float32) for k in fut_cols]
+    feature_label_slice = tf.train.slice_input_producer(hist_np + fut_np,
+                                                        num_epochs=num_epochs,
+                                                        shuffle=False, seed=seed)
+
+    batch_dict = tf.train.batch(feature_label_slice, batch_size,
+                                num_threads=1, capacity=2*batch_size,
+                                enqueue_many=False, shapes=None, dynamic_pad=False,
+                                allow_smaller_final_batch=True,
+                                shared_name=None, name=None)
+    inputs = tf.concat([tf.expand_dims(batch_dict[k], 1) for k in range(0, HIST_LENGTH)], axis=1)
+    labels = tf.concat([tf.expand_dims(batch_dict[k], 1) for k in range(HIST_LENGTH, HIST_LENGTH+NUM_OUTPUTS)], axis=1)
+    return inputs, labels
+
+
+  def model_fn(features, labels, mode, params):
+    x = tf.split(features, NUM_INPUTS, axis=1)
+    x_s = [tf.reshape(x[k], [-1, NUM_FEATS]) for k in range(0, len(x))]
+
+    # Config for deep multi cell
+    first_cell = tf.nn.rnn_cell.LSTMCell(8, cell_clip=params['cell_clip'],
+                                         forget_bias=params['forget_bias'])
+    second_cell = tf.nn.rnn_cell.LSTMCell(4, cell_clip=params['cell_clip'],
+                                          forget_bias=params['forget_bias'])
+    last_cell = tf.nn.rnn_cell.LSTMCell(LSTM_SIZE, cell_clip=params['cell_clip'],
+                                        forget_bias=params['forget_bias'],
+                                        num_proj=2)
+    if mode == tf.contrib.learn.ModeKeys.TRAIN:
+      first_cell, second_cell = [tf.nn.rnn_cell.DropoutWrapper(c, output_keep_prob=params['output_keep_prob']) for c in [first_cell, second_cell]]
+    lstm_layers = tf.nn.rnn_cell.MultiRNNCell([first_cell, second_cell,
+                                               last_cell])
+    outputs, _ = tf.nn.static_rnn(lstm_layers, x_s, dtype=tf.float32)
+    outputs = outputs[-1]
+    weight = tf.Variable(tf.random_normal([LSTM_SIZE, NUM_OUTPUTS]))
+    bias = tf.Variable(tf.random_normal([NUM_OUTPUTS]))
+    predictions = tf.matmul(outputs, weight) + bias
+    optimizer = tf.train.ProximalAdagradOptimizer(
+        learning_rate=params['learning_rate'],
+        l1_regularization_strength=params['l1_reg']
+    )
+
+    if mode == tf.contrib.learn.ModeKeys.TRAIN or mode == tf.contrib.learn.ModeKeys.EVAL:
+      loss = tf.losses.absolute_difference(labels, predictions)
+      train_op = optimizer.minimize(loss, global_step=tf.contrib.framework.get_global_step())
+      eval_metric_ops = {
+          'rmse': tf.metrics.root_mean_squared_error(labels, predictions)
+      }
+    else:
+      loss = None
+      train_op = None
+      eval_metric_ops = None
+
+    predictions_dict = {"result": predictions}
+
+    return tf.estimator.EstimatorSpec(
+        mode=mode,
+        predictions=predictions_dict,
+        loss=loss,
+        train_op=train_op,
+        eval_metric_ops=eval_metric_ops)
+
+
+  # Train the model
+  with tf.Session() as sess:
+    estimator = tf.estimator.Estimator(model_fn=model_fn, params=MODEL_PARAMS)
+    estimator.train(input_fn=lambda:input_fn(data, seed=SEED, batch_size=BATCH_SIZE), steps=NUM_STEPS)
+  sess.close()
+
+  # Produce Forecast
+  mergedFinal = merged4.copy()
+  mergedwideFinal = hist_fut_widen(mergedFinal, n=0, target=0)
+  zeros = [0]*12
+  mergedwideFinal[fut_cols] = pd.DataFrame([zeros], index=mergedwideFinal.index)
+
+  all_predictions = estimator.predict(input_fn=lambda:input_fn(mergedwideFinal,
+                                                               batch_size=len(mergedwideFinal)))
+  #another difference between Python2 vs Python3: next()
+  prediction_values = np.array([next(all_predictions)['result'] for i in range(len(mergedwideFinal))])
+
+  mergedwideFinal['pred_1'] = prediction_values[:, 0]
+  mergedwideFinal['pred_2'] = prediction_values[:, 1]
+  mergedwideFinal['pred_3'] = prediction_values[:, 2]
+  mergedwideFinal['pred_4'] = prediction_values[:, 3]
+  mergedwideFinal['pred_5'] = prediction_values[:, 4]
+  mergedwideFinal['pred_6'] = prediction_values[:, 5]
+  mergedwideFinal['pred_7'] = prediction_values[:, 6]
+  mergedwideFinal['pred_8'] = prediction_values[:, 7]
+  mergedwideFinal['pred_9'] = prediction_values[:, 8]
+  mergedwideFinal['pred_10'] = prediction_values[:, 9]
+  mergedwideFinal['pred_11'] = prediction_values[:, 10]
+  mergedwideFinal['pred_12'] = prediction_values[:, 11]
+
+  pred_cols = list(reversed(list(filter(lambda x: 'pred_' in x, list(mergedwideFinal)))))
+  ids = ['brand', 'gmma_desc']
+  final = mergedwideFinal[ids + pred_cols]
+
+  with open(outputFile, mode='w') as f:
+    final.to_csv(f, index=False)
+
+  print('output written to ' + str(outputFile))
+
+if __name__ == '__main__':
+  tf.app.run(main)
+
+
+```
