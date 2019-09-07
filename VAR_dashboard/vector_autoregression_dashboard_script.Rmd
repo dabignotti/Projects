@@ -1,0 +1,386 @@
+---
+title: "Vector Autoregression Dashboard"
+author: "David A. Bignotti"
+output: 
+  flexdashboard::flex_dashboard:
+    source_code: embed
+    theme: lumen
+    logo: 'C:/Users/File/Path/to/logo.png'
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(DT)
+library(forecast)
+library(vars)
+library(tseries)
+library(xts)
+library(readxl)
+library(fredr)
+library(RColorBrewer)
+library(MASS)
+library(zoo)
+library(urca)
+library(astsa)
+library(lmtest)
+library(data.table)
+library(htmltools)
+library(dygraphs)
+library(timeSeries)
+library(cowplot)
+```
+
+```{r monthly update objects, include=FALSE}
+# Update these objects each month to reflect the lastest input window and output window
+
+input_start_date <- "2015-01-01" # the start date of input data
+input_end_date <- "2019-07-01" # the end date of input data
+output_start_date <- "2019-08-01" # the first month of 6-month forecast
+output_end_date <- "2020-01-01" # the last month of 6-month forecast
+dy_range_start_date <- "2018-01-01" # the first month to display in the forecast plot's range selector tool
+```
+
+```{r import and subset data, include=FALSE}
+# Import the dataset from its local filepath
+
+var_inputs <- read_excel("C:/Users/File/Path/to/input/data.xlsx")
+
+fredr_set_key("APINUMBER") # API call to fred.stlouisfed.org
+
+gasprice <- fredr(series_id = "GASREGM", 
+                  observation_start = as.Date(input_start_date), 
+                  observation_end = as.Date(input_end_date)
+                  ) # bring in gas prices as an input variable
+
+# Subset the input input data
+
+gmc <- dplyr::filter(var_inputs, Division == "GMC")
+gmc <- bind_cols(gmc, gasprice) %>% # combine the GMC and gas price data columns
+  dplyr::select(-Month, -Year, -Division, -date, -series_id) # remove those columns not needed for model
+gmc <- rename(gmc, GasPrice = value) # rename the gas price column
+setcolorder(gmc, c("StartDate", "GasPrice", "TotalOutcomes", "ActualSales")) # reorder the columns so Sales is on the far right
+gmc$StartDate <- as.Date(gmc$StartDate)
+```
+
+```{r VAR model, include=FALSE}
+var <- dplyr::select(buick, ActualSales, TotalOutcomes, GasPrice) %>%
+  VAR(lag.max = 6, type = "const", ic = c("AIC", "HQ", "SC", "FPE"))
+```
+
+```{r Impulse Response Function, include=FALSE}
+irf1 <- vars::irf(x = var, 
+                  impulse = "TotalOutcomes", 
+                  response = "ActualSales", 
+                  n.ahead = 6, 
+                  ortho = TRUE, 
+                  cumulative = FALSE, 
+                  boot = TRUE, 
+                  ci = 0.95)
+irf2 <- vars::irf(x = var, 
+                  impulse = "TotalOutcomes", 
+                  response = "ActualSales", 
+                  n.ahead = 6, 
+                  ortho = TRUE, 
+                  cumulative = TRUE, 
+                  boot = TRUE, 
+                  ci = 0.95)
+```
+
+```{r BUICK VAR forecast, include=FALSE}
+# create a date field to join with forecasts
+StartDate <- seq(from = as.Date(output_start_date), to = as.Date(output_end_date), by = 'month') 
+
+
+# produce a six-month-ahead forecast with a 95% confidence interval and convert to data.frame
+forecast <- predict(var, n.ahead = 6, ci = 0.95) 
+fcast <- as.data.frame(forecast$fcst)
+
+
+# reorder variables and keep only Leads and Sales forecasts
+fcast <- fcast[, c(6, 5, 7, 2, 1, 3)] 
+
+
+# combine forecast with dates
+fcast <- cbind(StartDate, fcast) 
+
+
+# split forecast data.frame into one each for leads and sales
+fcastsales <- fcast[c(1, 5:7)]
+fcastleads <- fcast[c(1, 2:4)]
+
+
+# rename fcast values to agree with buick.past names
+colnames(fcastsales)[3] <- "ForecastSales"
+colnames(fcastleads)[3] <- "ForecastLeads"
+
+
+# create prior values data.frames to join with forecast data.frames
+pastsales <- gmc %>%
+  dplyr::select(-GasPrice, -TotalOutcomes)
+
+# create placeholder columns for confidence interval bounds
+
+pastsales$ActualSales.lower <- NA  
+pastsales$ActualSales.upper <- NA
+
+
+# reorder columns 
+pastsales <- pastsales[, c(1, 3, 2, 4)] 
+
+
+# set placeholders as numeric field for joining
+pastsales$ActualSales.lower <- as.numeric(pastsales$ActualSales.lower) 
+pastsales$ActualSales.upper <- as.numeric(pastsales$ActualSales.upper)
+
+
+# Join past data.frame with forecast data.frame
+allsales <- merge(pastsales, fcastsales, all = TRUE)
+
+
+# create prior values data.frames to join with forecast data.frames
+pastleads <- gmc %>%
+  dplyr::select(-GasPrice, -ActualSales)
+
+
+# create placeholder columns for confidence interval bounds
+pastleads$TotalOutcomes.lower <- NA
+pastleads$TotalOutcomes.upper <- NA
+
+
+# reorder columns 
+pastleads <- pastleads[, c(1, 3, 2, 4)]
+
+
+# set placeholders as numeric field for joining
+pastleads$TotalOutcomes.lower <- as.numeric(pastleads$TotalOutcomes.lower) 
+pastleads$TotalOutcomes.upper <- as.numeric(pastleads$TotalOutcomes.upper)
+
+
+# Join past data.frame with forecast data.frame
+allleads <- merge(pastleads, fcastleads, all = TRUE)
+
+
+# remove date field and transform sales data to time series objects (in order to function with dygraphs plot)
+sales <- allsales %>%
+  dplyr::select(-StartDate) 
+
+
+# transform sales data.frames into time series objects
+sales <- ts(sales, start = c(2015, 1), frequency = 12)
+
+
+# remove date field and transform leads data to time series objects (in order to function with dygraphs plot)
+leads <- allleads %>%
+  dplyr::select(-StartDate)
+
+
+# transform leads data.frames into time series objects
+leads <- ts(leads, start = c(2015, 1), frequency = 12)
+
+
+# remove objects to clear local memory
+rm(StartDate)
+rm(fcastleads)
+rm(fcastsales)
+rm(pastleads)
+rm(pastsales)
+rm(allleads)
+rm(allsales)
+rm(sales)
+rm(leads)
+```
+
+
+Sidebar {.sidebar data-width=250}
+=====================================
+
+
+
+**Navigating this Dashboard**
+
+* **Historic Data** tracks the average national price per gallon of gasoline, reported lead outcomes for the brand, and retail deliveries for every month dating back to 2015.
+
+* **Impulse Response Functions** approximate the influence of a 1% spike in lead outcomes on retail deliveries, as far as six months after the fact. In this panel, month 1 refers to the month in which a theoretical 1% (positive) jump in lead outcomes occurs. Month 2 refers to the next month's expected change in retail deliveries attributable to the spike in lead outcomes.
+
+* **Forecast Data** shows the six-month forecast for lead outcomes and retail sales, including a 95% confidence interval. We expect, with 95% certainty, the number of lead outcomes and retail sales to fall within the lower and upper bounds of our forecast.
+
+* **Forecast Plots** show the historic leads and sales data and the forecasted values for the next six months.
+
+* For questions/comments, please contact David Bignotti (email@email.com)
+
+
+GMC {data-icon="fa-expand"}
+=====================================  
+
+Column {data-width=375}
+-----------------------------------------------------------------------
+
+### GMC Historic Data {data-height=285}
+
+```{r Buick Historic Values Table Panel}
+datatable(gmc,
+          rownames = FALSE,
+          colnames = c('Month', 'Gas Price', 'Lead Outcomes', 'Retail Deliveries'),
+          extensions = c('Scroller', 'Buttons', 'Responsive'),
+          class = 'compact table-hover',
+          options = list(dom = 'rt',
+                         buttons = c('copy', 'csv', 'excel'),
+                         pageLength = 12,
+                         scrollY = "200",
+                         scroller = TRUE,
+                         columnDefs = list(list(className = 'dt-center',
+                                                targets = 1:3), 
+                                           list(className = 'dt-left', 
+                                                targets = 0)))) %>%
+  formatRound('TotalOutcomes', interval = 3, mark = ",", digits = 0) %>%
+  formatRound('ActualSales', interval = 3, mark = ",", digits = 0) %>%
+  formatCurrency('GasPrice', currency = "$", digits = 2)
+```
+
+### {data-height=365}
+
+```{r Impulse Response Functions, echo=FALSE, out.width= "50%"}
+f1 <- plot(irf1$irf$TotalOutcomes, 
+             type = "n", 
+             ylab = "Retail Deliveries", 
+             sub = "95% Bootstrap Confidence Interval", 
+             main = "Impulse Response from Lead Outcomes", 
+             ylim = c(min(irf1$Lower$TotalOutcomes), max(irf1$Upper$TotalOutcomes))) 
+abline(h = 0, 
+       lwd = 2) 
+polygon(x = c(seq_along(irf1$irf$TotalOutcomes), rev(seq_along(irf1$irf$TotalOutcomes))), 
+        y = c(irf1$Lower$TotalOutcomes, rev(irf1$Upper$TotalOutcomes)), 
+        lty = 0, 
+        col = adjustcolor("lightgrey", alpha.f = 0.5)) 
+lines(irf1$irf$TotalOutcomes, 
+      col = "steelblue2", 
+      lwd = 5)
+
+f2 <- plot(irf2$irf$TotalOutcomes, 
+             type = "n", 
+             ylab = "Retail Deliveries", 
+             sub = "95% Bootstrap Confidence Interval", 
+             main = "Cumulative Impulse Response from Lead Outcomes", 
+             ylim = c(min(irf2$Lower$TotalOutcomes), max(irf2$Upper$TotalOutcomes)))
+abline(h = 0, 
+       lwd = 2)
+polygon(x = c(seq_along(irf2$irf$TotalOutcomes), rev(seq_along(irf2$irf$TotalOutcomes))), 
+        y = c(irf2$Lower$TotalOutcomes, rev(irf2$Upper$TotalOutcomes)), 
+        lty = 0, 
+        col = adjustcolor("lightgrey", alpha.f = 0.5))
+lines(irf2$irf$TotalOutcomes, 
+      col = "steelblue2", 
+      lwd = 5)
+
+cowplot::plot_grid(f1, f2, align = "h", nrow = 1, ncol = 2, labels = NULL)
+```
+
+### GMC 6-Month Sales Forecast {data-height=350}
+
+```{r Buick Forecast Values Table Panel}
+fcast <- fcast %>%
+  dplyr::select(-StartDate)
+
+custom <- htmltools::withTags(table(
+  class = 'display', 
+  thead(
+    tr(
+      th(rowspan = 2, 'Months Ahead'),
+      th(colspan = 3, 'Lead Outcomes'),
+      th(colspan = 3, 'Retail Deliveries')
+    ),
+    tr(
+      lapply(rep(c('Lower Bound', 'Forecast', 'Upper Bound'), 2), th)
+    )
+  )
+))
+
+datatable(fcast, 
+          rownames = TRUE, 
+          class = 'compact table-hover', 
+          container = custom, 
+          colnames = c('Leads Lower Bound', 'Leads Forecast', 'Leads Upper Bound', 
+                       'Sales Lower Bound', 'Sales Forecast', 'Sales Upper Bound'), 
+          extensions = c('Buttons', 'Responsive'), 
+          options = list(dom = 'rt', 
+                         buttons = c('copy', 'csv', 'excel'), 
+                         pageLength = 6, 
+                         columnDefs = list(list(className = 'dt-center', 
+                                                targets = 0:6))))  %>%
+  formatRound(1:6, interval = 3, digits = 0)
+```
+
+
+Column {data-width=550}
+-----------------------------------------------------------------------
+
+###
+
+```{r GMC Sales Forecast Plot}
+dygraph(sales, main = "GMC Retail Sales Forecast") %>%
+  dySeries("ActualSales", 
+           label = "Actual", 
+           strokeWidth = 2, 
+           color = "green") %>%
+  dySeries(c("ActualSales.lower", "ForecastSales", "ActualSales.upper"), 
+           label = "Forecast", 
+           strokeWidth = 2, 
+           strokePattern = "dashed", 
+           drawPoints = TRUE, 
+           color = "#7f0180") %>%
+  dyAxis("y", label = "Units Delivered", 
+         valueRange = c(0, 40000), 
+         axisLineWidth = 1.5, 
+         drawGrid = TRUE, 
+         axisLabelWidth = 70) %>%
+  dyAxis("x", label = "Month", 
+         drawGrid = TRUE, 
+         axisLineWidth = 1.5) %>%
+  dyEvent(output_start_date, 
+          "Forecast Start     ", 
+          labelLoc = "top") %>% 
+  dyHighlight(highlightCircleSize = 5,
+              highlightSeriesBackgroundAlpha = 0.5,
+              highlightSeriesOpts = list(strokeWidth = 3),
+              hideOnMouseOut = FALSE) %>%
+  dyOptions(rightGap = 20, 
+            labelsKMB = TRUE) %>%
+  dyRangeSelector(height = 20, 
+                  dateWindow = c(dy_range_start_date, output_end_date))
+```
+
+###
+
+```{r GMC Leads Forecast Plot}
+dygraph(leads, main = "Buick Lead Outcomes Forecast") %>%
+  dySeries("TotalOutcomes", 
+           label = "Actual", 
+           strokeWidth = 2, 
+           color = "green") %>%
+  dySeries(c("TotalOutcomes.lower", "ForecastLeads", "TotalOutcomes.upper"), 
+           label = "Forecast", 
+           strokeWidth = 2, 
+           strokePattern = "dashed", 
+           drawPoints = TRUE, 
+           color = "#7f0180") %>%
+  dyAxis("y", label = "Outcomes Generated", 
+         valueRange = c(20000000, 55000000), 
+         axisLineWidth = 1.5, 
+         drawGrid = TRUE, 
+         axisLabelWidth = 70) %>%
+  dyAxis("x", label = "Month", 
+         drawGrid = TRUE, 
+         axisLineWidth = 1.5) %>%
+  dyEvent(output_start_date, # MANUAL UPDATE
+          "Forecast Start     ", 
+          labelLoc = "top") %>% 
+  dyHighlight(highlightCircleSize = 5,
+              highlightSeriesBackgroundAlpha = 0.5,
+              highlightSeriesOpts = list(strokeWidth = 3),
+              hideOnMouseOut = FALSE) %>%
+  dyOptions(rightGap = 20, 
+            labelsKMB = TRUE) %>%
+  dyRangeSelector(height = 20, 
+                  dateWindow = c(dy_range_start_date, output_end_date))
+```
